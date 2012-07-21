@@ -1,15 +1,21 @@
 ;;; perspective.el --- switch between named "perspectives" of the editor
 
 ;; Copyright (C) 2008-2010 Nathan Weizenbaum <nex342@gmail.com>
+;; Copyright (C) 2012-2012 Tim O'Callaghan <timo@dspsrv.com>
 ;;
 ;; Licensed under the same terms as Emacs.
 
 ;; Author: Nathan Weizenbaum
 ;; URL: http://github.com/nex3/perspective-el
-;; Version: 1.7
+;; Version: 1.6
 ;; Created: 2008-03-05
 ;; By: Nathan Weizenbaum
 ;; Keywords: workspace, convenience, frames
+
+;; Updated by Tim O'Callaghan
+;; http://github.com/timoc/perspective-el
+;; to handle storing workspaces
+;;
 
 ;;; Commentary:
 
@@ -26,7 +32,14 @@
 ;; configuration, and when in a perspective only its buffers are
 ;; available by default.
 
+;; This version has been updated with the addition of being able to
+;; pre-create perspectives, and associate them with desktop(s),
+;;
+;;
+;;
+
 (require 'cl)
+(require 'wmctrl)
 
 ;;; Code:
 
@@ -79,11 +92,40 @@ them in Emacs >= 23.2.  In older versions, this is identical to
              ,@(setmap binding-syms)))))))
 
 (defstruct (perspective
+            ;; set slot prefix to persp-
             (:conc-name persp-)
+            ;; set struct constructor name to make-persp-internal from make-perspective
             (:constructor make-persp-internal))
-  name buffers killed local-variables
+  ;; perspective name
+  name
+  ;; buffers in perspective?
+  buffers
+  ;; killed?
+  killed
+  ;; local variableS?
+  local-variables
+  ;; desktop
+  desktop
+  ;; buffer-history?
   (buffer-history buffer-name-history)
+  ;; set window-configuration to current-window-configuration
   (window-configuration (current-window-configuration)))
+
+(defvar persp-use-desktops t
+  "if t - store desktop numbers in perspective. and switch desktop
+  when switching perspective")
+
+(defun persp-turn-off-desktops ()
+  "Deactivate the perspective modestring."
+  (interactive)
+  (setq persp-use-desktops nil)
+  (persp-update-modestring))
+
+(defun persp-turn-on-desktops ()
+  "Activate the perspective modestring."
+  (interactive)
+  (setq persp-use-desktops t)
+  (persp-update-modestring))
 
 (defalias 'persp-killed-p 'persp-killed
   "Return whether the perspective CL-X has been killed.")
@@ -113,6 +155,7 @@ Run with the activated perspective active.")
 (define-prefix-command 'perspective 'perspective-map)
 (define-key persp-mode-map (kbd "C-x x") perspective-map)
 
+(define-key persp-mode-map (kbd "C-x x d") 'persp-switch-desktop)
 (define-key persp-mode-map (kbd "C-x x s") 'persp-switch)
 (define-key persp-mode-map (kbd "C-x x k") 'persp-remove-buffer)
 (define-key persp-mode-map (kbd "C-x x c") 'persp-kill)
@@ -128,14 +171,15 @@ Run with the activated perspective active.")
    "A hash containing all perspectives. The keys are the
 perspetives' names. The values are persp structs,
 with the fields NAME, WINDOW-CONFIGURATION, BUFFERS,
-BUFFER-HISTORY, KILLED, and LOCAL-VARIABLES.
+BUFFER-HISTORY, KILLED, LOCAL-VARIABLES and DESKTOP
 
 NAME is the name of the perspective.
 
 WINDOW-CONFIGURATION is the configuration given by
 `current-window-configuration' last time the perspective was
 saved (if this isn't the current perspective, this is when the
-perspective was last active).
+perspective was last active). A window configuration records the
+entire layout of one frame only.
 
 BUFFERS is a list of buffer objects that are associated with this
 perspective.
@@ -146,7 +190,10 @@ perspective.
 KILLED is non-nil if the perspective has been killed.
 
 LOCAL-VARIABLES is an alist from variable names to their
-perspective-local values."))
+perspective-local values.
+
+DESKTOP is the desktop number (0...x) of the virtual desktop the
+perspective is associated with the frame."))
 
 (make-variable-frame-local
  (defvar persp-curr nil
@@ -370,14 +417,16 @@ This is used for cycling between perspectives."
           (persp-get-quick char)))
        (t (persp-get-quick-helper char prev (cdr names)))))))
 
-(defun persp-switch (name)
+(defun persp-switch (name &rest desktop)
   "Switch to the perspective given by NAME.
 If it doesn't exist, create a new perspective and switch to that.
 
 Switching to a perspective means that all buffers associated with
 that perspective are reactivated (see `persp-reactivate-buffers'),
 the perspective's window configuration is restored, and the
-perspective's local variables are set."
+perspective's local variables are set.
+if `persp-use-desktops' is non nil, then send to the appropriate desktops
+"
   (interactive "i")
   (if (null name) (setq name (persp-prompt (and persp-last (persp-name persp-last)))))
   (if (and persp-curr (equal name (persp-name persp-curr))) name
@@ -385,10 +434,10 @@ perspective's local variables are set."
       (setq persp-last persp-curr)
       (when (null persp)
         (setq persp (persp-new name)))
-      (persp-activate persp)
+      (persp-activate persp desktop)
       name)))
 
-(defun persp-activate (persp)
+(defun persp-activate (persp &rest desktop)
   "Activate the perspective given by the persp struct PERSP."
   (check-persp persp)
   (persp-save)
@@ -397,6 +446,7 @@ perspective's local variables are set."
   (persp-reactivate-buffers (persp-buffers persp))
   (setq buffer-name-history (persp-buffer-history persp))
   (set-window-configuration (persp-window-configuration persp))
+  ; (wmctrl-set-frame-desktop (persp-desktop persp))
   (persp-update-modestring)
   (run-hooks 'persp-activated-hook))
 
@@ -637,7 +687,9 @@ named collections of buffers and window configurations."
         (add-hook 'ido-make-buffer-list-hook 'persp-set-ido-buffers)
         (setq read-buffer-function 'persp-read-buffer)
 
-        (persp-init-frame (selected-frame))
+        ;; (persp-init-frame (selected-frame))
+        ;; from pull list
+        (mapcar 'persp-init-frame (frame-list))
         (setf (persp-buffers persp-curr) (buffer-list))
 
         (run-hooks 'persp-mode-hook))
@@ -671,8 +723,13 @@ By default, this uses the current frame."
       (persp-update-modestring))
 
     (persp-activate
-     (make-persp :name "main" :buffers (list (current-buffer))
-       :window-configuration (current-window-configuration)))))
+     (make-persp
+       :name "main"
+       :buffers (list (current-buffer))
+       :window-configuration (current-window-configuration)
+;;       :desktop (wmctrl-get-desktop-id)
+       ))
+     ))
 
 (defun persp-make-variable-persp-local (variable)
   "Make VARIABLE become perspective-local.
@@ -700,10 +757,24 @@ it. In addition, if one exists already, runs BODY in it immediately."
      (when (gethash ,name perspectives-hash)
        (with-perspective ,name ,@body))))
 
+;;(defun persp-set-ido-buffers ()
+;;  (setq ido-temp-list
+;;        (let ((names (remq nil (mapcar 'buffer-name (persp-buffers persp-curr)))))
+;;          (or (remove-if (lambda (name) (eq (string-to-char name) ? )) names) names))))
+
 (defun persp-set-ido-buffers ()
-  (setq ido-temp-list
-        (let ((names (remq nil (mapcar 'buffer-name (persp-buffers persp-curr)))))
-          (or (remove-if (lambda (name) (eq (string-to-char name) ? )) names) names))))
+  "Restrict the ido buffer to the current perspective."
+  (let ((persp-names
+         (remq nil (mapcar 'buffer-name (persp-buffers persp-curr))))
+        (indices (make-hash-table)))
+    (let ((i 0))
+      (dolist (elt ido-temp-list)
+        (puthash elt i indices)
+        (setq i (1+ i))))
+    (setq ido-temp-list
+          (sort persp-names (lambda (a b)
+                              (< (gethash a indices 10000)
+                                 (gethash b indices 10000)))))))
 
 (defun quick-perspective-keys ()
   "Bind quick key commands to switch to perspectives.
